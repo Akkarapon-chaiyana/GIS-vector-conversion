@@ -8,16 +8,22 @@ FlatGeobuf · KML · CSV (WKT geometry)
 
 ## Run
 
-### Easiest (macOS): double-click launcher
+### Easiest: double-click launcher
 
-Double-click **`Start Converter.command`** in Finder. It starts the Python server and
-opens http://localhost:8000 in your browser automatically (if the app is already
-running, it just opens the browser tab). Close the terminal window or press `Ctrl+C`
-to stop. The first time, macOS Gatekeeper may block a plain double-click — use
-right-click → Open instead.
+- **macOS** — double-click **`Start Converter.command`** in Finder. The first time,
+  Gatekeeper may block a plain double-click; use right-click → Open instead. Requires
+  the one-time setup below.
+- **Windows** — double-click **`Start Converter.bat`**. It handles first-time setup
+  by itself (creates the Python environment and installs dependencies, a few minutes
+  on first run) — you only need [Python 3.10+](https://www.python.org/downloads/)
+  installed with "Add python.exe to PATH" checked.
 
-Requires a one-time setup first (see "Setup from scratch" below), including
-`npm run build` so the server can serve the UI.
+Both start the Python server and open http://localhost:8000 in your browser
+automatically (if the app is already running, they just open the browser tab).
+Press `Ctrl+C` or close the terminal window to stop.
+
+The built UI (`frontend/dist`) is committed to the repo, so a fresh clone runs with
+only Python — Node.js is needed only if you change frontend code.
 
 ### Manual
 
@@ -42,15 +48,22 @@ http://localhost:8000:
 cd frontend && npm run build
 ```
 
-## Setup from scratch
+## Setup from scratch (macOS/Linux)
 
 ```bash
 cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cd ../frontend
+```
+
+On Windows, `Start Converter.bat` does this automatically.
+
+Frontend development only (the prebuilt UI is already in the repo):
+
+```bash
+cd frontend
 npm install
-npm run build   # lets the Python server serve the UI (needed for the launcher)
+npm run build
 ```
 
 ## Usage
