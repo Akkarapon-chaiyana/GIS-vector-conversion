@@ -8,6 +8,19 @@ FlatGeobuf · KML · CSV (WKT geometry)
 
 ## Run
 
+### Easiest (macOS): double-click launcher
+
+Double-click **`Start Converter.command`** in Finder. It starts the Python server and
+opens http://localhost:8000 in your browser automatically (if the app is already
+running, it just opens the browser tab). Close the terminal window or press `Ctrl+C`
+to stop. The first time, macOS Gatekeeper may block a plain double-click — use
+right-click → Open instead.
+
+Requires a one-time setup first (see "Setup from scratch" below), including
+`npm run build` so the server can serve the UI.
+
+### Manual
+
 Backend (FastAPI + GeoPandas/GDAL):
 
 ```bash
@@ -37,6 +50,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cd ../frontend
 npm install
+npm run build   # lets the Python server serve the UI (needed for the launcher)
 ```
 
 ## Usage
