@@ -1,0 +1,6 @@
+backend/.venv/
+backend/workspace/
+__pycache__/
+node_modules/
+frontend/dist/
+.DS_Store

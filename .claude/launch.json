@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "/Users/achaiyan/vector_conversion/backend/.venv/bin/uvicorn",
+      "runtimeArgs": ["main:app", "--app-dir", "/Users/achaiyan/vector_conversion/backend", "--port", "8000"],
+      "port": 8000
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "/Users/achaiyan/vector_conversion/frontend"],
+      "port": 5173
+    }
+  ]
+}
