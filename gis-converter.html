@@ -70,7 +70,7 @@ select, input[type=number] { padding: .5rem .6rem; border: 1px solid var(--borde
 <div class="app">
   <h1>GIS Vector Converter</h1>
   <p class="sub">Runs entirely in your browser — files never leave your machine.
-    Convert between Shapefile, GeoPackage, GeoJSON, FlatGeobuf, KML, CSV (and GeoParquet where supported), with optional reprojection.</p>
+    Convert between Shapefile, GeoPackage, GeoParquet, GeoJSON, FlatGeobuf, KML and CSV, with optional reprojection.</p>
 
   <div id="engine" class="msg msg-info">Loading conversion engine (GDAL WebAssembly, ~10 MB, first load only)…</div>
 
@@ -110,7 +110,7 @@ const GDAL_CDN = 'https://cdn.jsdelivr.net/npm/gdal3.js@2.8.1/dist/package';
 const FORMATS = [
   { key: 'shapefile',  label: 'Shapefile (zipped)',  driver: 'ESRI Shapefile', ext: 'zip'  },
   { key: 'geopackage', label: 'GeoPackage',          driver: 'GPKG',           ext: 'gpkg' },
-  { key: 'geoparquet', label: 'GeoParquet',          driver: 'Parquet',        ext: 'parquet' },
+  { key: 'geoparquet', label: 'GeoParquet',          driver: 'Parquet',        ext: 'parquet', custom: true },
   { key: 'geojson',    label: 'GeoJSON',             driver: 'GeoJSON',        ext: 'geojson' },
   { key: 'flatgeobuf', label: 'FlatGeobuf',          driver: 'FlatGeobuf',     ext: 'fgb'  },
   { key: 'kml',        label: 'KML',                 driver: 'KML',            ext: 'kml'  },
@@ -138,15 +138,15 @@ initGdalJs({ path: GDAL_CDN, useWorker: false }).then((g) => {
   const vector = Object.keys(Gdal.drivers.vector || {});
   const fmtSel = $('#fmt');
   for (const f of FORMATS) {
-    if (!vector.includes(f.driver)) continue;
+    if (!f.custom && !vector.includes(f.driver)) continue;
     const opt = document.createElement('option');
     opt.value = f.key; opt.textContent = f.label;
     if (f.key === 'geopackage') opt.selected = true;
     fmtSel.appendChild(opt);
   }
-  const missing = FORMATS.filter((f) => !vector.includes(f.driver)).map((f) => f.label);
+  const missing = FORMATS.filter((f) => !f.custom && !vector.includes(f.driver)).map((f) => f.label);
   engineEl.className = 'msg msg-info';
-  engineEl.textContent = 'Ready — conversion engine loaded (GDAL ' + (Gdal.getVersion ? '' : '') + 'WebAssembly).'
+  engineEl.textContent = 'Ready — conversion engine loaded (GDAL WebAssembly).'
     + (missing.length ? ' Not available in this build: ' + missing.join(', ') + '.' : '');
   dzEl.classList.remove('disabled');
 }).catch((err) => {
@@ -182,6 +182,16 @@ async function addFile(file) {
 
   try {
     let inputs = [file];
+    let srsOverride = null;
+    const parquetWarnings = [];
+    if (/\.(geo)?parquet$/i.test(file.name)) {
+      // GDAL-WASM has no Parquet driver: decode with hyparquet, hand GeoJSON to GDAL
+      const pq = await readParquetFile(file);
+      srsOverride = pq.srsOverride;
+      parquetWarnings.push(...pq.warnings);
+      const stem = file.name.replace(/\.[^.]+$/, '');
+      inputs = [new File([JSON.stringify(pq.geojson)], stem + '.geojson')];
+    }
     if (/\.zip$/i.test(file.name)) {
       const zip = await JSZip.loadAsync(file);
       inputs = [];
@@ -197,18 +207,18 @@ async function addFile(file) {
     let ds = res.datasets.find((d) => /\.shp$/i.test(d.path || '')) || res.datasets[0];
 
     // Preview: convert to GeoJSON in WGS84 (fall back to raw coords if no CRS)
-    let gj = null, warnings = [];
+    let gj = null, warnings = [...parquetWarnings];
     try {
-      gj = await toGeoJson(ds, true);
+      gj = await toGeoJson(ds, true, srsOverride);
     } catch (e1) {
       try {
-        gj = await toGeoJson(ds, false);
+        gj = await toGeoJson(ds, false, srsOverride);
         warnings.push('Source CRS is unknown or unsupported — map preview shows raw coordinates, and reprojection will fail.');
       } catch (e2) {
         warnings.push('Map preview unavailable: ' + (e2.message || e2));
       }
     }
-    const entry = { id, name: file.name, ds, geojson: gj, warnings };
+    const entry = { id, name: file.name, ds, geojson: gj, warnings, srsOverride };
     entries.push(entry);
     renderCard(card, entry);
   } catch (err) {
@@ -218,8 +228,9 @@ async function addFile(file) {
   }
 }
 
-async function toGeoJson(ds, reproject) {
+async function toGeoJson(ds, reproject, srsOverride) {
   const args = ['-f', 'GeoJSON'];
+  if (srsOverride) args.push('-s_srs', srsOverride);
   if (reproject) args.push('-t_srs', 'EPSG:4326');
   const out = await Gdal.ogr2ogr(ds, args);
   const bytes = await Gdal.getFileBytes(out);
@@ -269,8 +280,12 @@ function toggleMap(card, entry, btn) {
     return;
   }
   btn.textContent = 'Hide map';
+  const total = entry.geojson.features.length;
+  const capped = total > 2000;
   holder.innerHTML = `<div class="mapwrap"><div class="map"></div>
-    <button class="expand">⛶ Full screen</button></div>`;
+    <button class="expand">⛶ Full screen</button></div>`
+    + (capped ? `<div class="msg msg-warn">Map shows only the first 2,000 of ${total.toLocaleString()} features
+      to keep the preview responsive — the conversion always includes all features.</div>` : '');
   const wrap = holder.querySelector('.mapwrap');
   const map = L.map(holder.querySelector('.map'));
   entry._map = map;
@@ -327,7 +342,9 @@ $('#convertall').addEventListener('click', async () => {
 
 async function convertEntry(entry, spec, epsg) {
   const warnings = [];
+  if (spec.key === 'geoparquet') return convertToGeoParquet(entry, epsg);
   const args = ['-f', spec.driver, ...(spec.creation || [])];
+  if (entry.srsOverride) args.push('-s_srs', entry.srsOverride);
   if (epsg) args.push('-t_srs', 'EPSG:' + epsg);
   if (spec.key === 'kml') warnings.push('KML keeps geometry plus Name/Description only; other attributes may be dropped by some viewers.');
   if (spec.key === 'csv') warnings.push('Geometry written as WKT text; CRS information is not stored in CSV.');
@@ -351,6 +368,179 @@ async function convertEntry(entry, spec, epsg) {
 
   const bytes = await Gdal.getFileBytes(out);
   return { blob: new Blob([bytes]), filename: stem + '.' + spec.ext, warnings };
+}
+
+// ---------------------------------------------------------------- GeoParquet
+// GDAL-WASM lacks the Parquet driver, so GeoParquet is handled with hyparquet
+// (pure-JS parquet reader/writer) plus a minimal 2D WKB codec below.
+let parquetLibs = null;
+function loadParquetLibs() {
+  if (!parquetLibs) {
+    parquetLibs = Promise.all([
+      import('https://cdn.jsdelivr.net/npm/hyparquet@1/+esm'),
+      import('https://cdn.jsdelivr.net/npm/hyparquet-compressors@1/+esm'),
+      import('https://cdn.jsdelivr.net/npm/hyparquet-writer@0/+esm'),
+    ]).then(([hy, comp, writer]) => ({ hy, comp, writer }));
+  }
+  return parquetLibs;
+}
+
+async function readParquetFile(file) {
+  const { hy, comp } = await loadParquetLibs();
+  const buf = await file.arrayBuffer();
+  const meta = hy.parquetMetadata(buf);
+  const warnings = [];
+
+  // "geo" key-value metadata: primary geometry column + CRS
+  let geoMeta = null;
+  for (const kv of meta.key_value_metadata || []) {
+    if (kv.key === 'geo') { try { geoMeta = JSON.parse(kv.value); } catch (_) {} }
+  }
+  const geomCol = (geoMeta && geoMeta.primary_column) || 'geometry';
+
+  let srsOverride = null;
+  const crs = geoMeta && geoMeta.columns && geoMeta.columns[geomCol] && geoMeta.columns[geomCol].crs;
+  if (crs && crs.id && crs.id.code && String(crs.id.code) !== '4326'
+      && !(crs.id.authority === 'OGC' && crs.id.code === 'CRS84')) {
+    srsOverride = (crs.id.authority || 'EPSG') + ':' + crs.id.code;
+  }
+
+  const rows = await hy.parquetReadObjects({ file: buf, compressors: comp.compressors });
+  if (!rows.length) warnings.push('Parquet file has no rows.');
+
+  const features = rows.map((row) => {
+    const { [geomCol]: geom, ...props } = row;
+    for (const k of Object.keys(props)) {
+      if (typeof props[k] === 'bigint') props[k] = Number(props[k]);
+    }
+    // newer hyparquet decodes GeoParquet WKB to GeoJSON itself; older returns raw bytes
+    let geometry = null;
+    if (geom && geom.type && (geom.coordinates || geom.geometries)) geometry = geom;
+    else if (geom) geometry = wkbToGeoJson(geom instanceof Uint8Array ? geom : new Uint8Array(geom));
+    return { type: 'Feature', properties: props, geometry };
+  });
+  return { geojson: { type: 'FeatureCollection', features }, srsOverride, warnings };
+}
+
+async function convertToGeoParquet(entry, epsg) {
+  const { writer } = await loadParquetLibs();
+  const warnings = [];
+  let gj;
+  try {
+    gj = await toGeoJson(entry.ds, true, entry.srsOverride); // GeoParquet default CRS is WGS84
+    if (epsg && epsg !== '4326') {
+      warnings.push('GeoParquet output is written in WGS84 (EPSG:4326), the format default — the EPSG:' + epsg + ' choice was not applied.');
+    }
+  } catch (_) {
+    gj = await toGeoJson(entry.ds, false, entry.srsOverride);
+    warnings.push('Source CRS is unknown — coordinates written as-is and assumed WGS84.');
+  }
+  const feats = gj.features;
+  if (!feats.length) throw new Error('No features to write.');
+
+  // columns: every property key + WKB geometry
+  const keys = [...new Set(feats.flatMap((f) => Object.keys(f.properties || {})))];
+  const columnData = keys.map((k) => ({
+    name: k,
+    data: feats.map((f) => (f.properties || {})[k] ?? null),
+  }));
+  columnData.push({
+    name: 'geometry',
+    data: feats.map((f) => (f.geometry ? geoJsonToWkb(f.geometry) : null)),
+    type: 'BYTE_ARRAY',
+  });
+  const geomTypes = [...new Set(feats.map((f) => f.geometry && f.geometry.type).filter(Boolean))];
+  const geoMeta = JSON.stringify({
+    version: '1.1.0',
+    primary_column: 'geometry',
+    columns: { geometry: { encoding: 'WKB', geometry_types: geomTypes } },
+  });
+  const buffer = writer.parquetWriteBuffer({
+    columnData,
+    kvMetadata: [{ key: 'geo', value: geoMeta }],
+  });
+  const stem = entry.name.replace(/\.[^.]+$/, '').replace(/\.[^.]+$/, '') || 'converted';
+  return { blob: new Blob([buffer]), filename: stem + '.parquet', warnings };
+}
+
+// ------------------------------------------------- minimal 2D WKB codec
+const WKB_TYPES = ['', 'Point', 'LineString', 'Polygon', 'MultiPoint', 'MultiLineString', 'MultiPolygon', 'GeometryCollection'];
+
+function wkbToGeoJson(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const [geom] = readWkbGeom(view, 0);
+  return geom;
+}
+
+function readWkbGeom(view, pos) {
+  const little = view.getUint8(pos) === 1; pos += 1;
+  let type = view.getUint32(pos, little); pos += 4;
+  const hasZ = type > 1000 || (type & 0x80000000) !== 0;
+  type = (type & 0xff) % 1000;
+  const kind = WKB_TYPES[type];
+  if (!kind) throw new Error('Unsupported WKB geometry type: ' + type);
+  const dims = hasZ ? 3 : 2;
+  const readPt = () => {
+    const c = [view.getFloat64(pos, little), view.getFloat64(pos + 8, little)];
+    pos += 8 * dims;
+    return c;
+  };
+  const readRing = () => {
+    const n = view.getUint32(pos, little); pos += 4;
+    return Array.from({ length: n }, readPt);
+  };
+  let coordinates;
+  if (kind === 'Point') coordinates = readPt();
+  else if (kind === 'LineString') coordinates = readRing();
+  else if (kind === 'Polygon') {
+    const n = view.getUint32(pos, little); pos += 4;
+    coordinates = Array.from({ length: n }, readRing);
+  } else if (kind === 'GeometryCollection') {
+    const n = view.getUint32(pos, little); pos += 4;
+    const geoms = [];
+    for (let i = 0; i < n; i++) { const [g, p] = readWkbGeom(view, pos); geoms.push(g); pos = p; }
+    return [{ type: kind, geometries: geoms }, pos];
+  } else { // Multi*
+    const n = view.getUint32(pos, little); pos += 4;
+    coordinates = [];
+    for (let i = 0; i < n; i++) { const [g, p] = readWkbGeom(view, pos); coordinates.push(g.coordinates); pos = p; }
+  }
+  return [{ type: kind, coordinates }, pos];
+}
+
+function geoJsonToWkb(geom) {
+  const parts = [];
+  writeWkbGeom(geom, parts);
+  const total = parts.reduce((s, p) => s + p.byteLength, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(new Uint8Array(p.buffer || p), off); off += p.byteLength; }
+  return out;
+}
+
+function writeWkbGeom(geom, parts) {
+  const type = WKB_TYPES.indexOf(geom.type);
+  if (type < 1) throw new Error('Unsupported geometry type: ' + geom.type);
+  const head = new DataView(new ArrayBuffer(5));
+  head.setUint8(0, 1); // little-endian
+  head.setUint32(1, type, true);
+  parts.push(head);
+  const u32 = (n) => { const d = new DataView(new ArrayBuffer(4)); d.setUint32(0, n, true); parts.push(d); };
+  const pt = (c) => { const d = new DataView(new ArrayBuffer(16));
+    d.setFloat64(0, c[0], true); d.setFloat64(8, c[1], true); parts.push(d); };
+  const ring = (r) => { u32(r.length); r.forEach(pt); };
+  const c = geom.coordinates;
+  if (geom.type === 'Point') pt(c);
+  else if (geom.type === 'LineString') ring(c);
+  else if (geom.type === 'Polygon') { u32(c.length); c.forEach(ring); }
+  else if (geom.type === 'GeometryCollection') {
+    u32(geom.geometries.length);
+    geom.geometries.forEach((g) => writeWkbGeom(g, parts));
+  } else { // Multi*
+    const childType = geom.type.replace('Multi', '');
+    u32(c.length);
+    c.forEach((cc) => writeWkbGeom({ type: childType, coordinates: cc }, parts));
+  }
 }
 </script>
 </body>
