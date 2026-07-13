@@ -6,6 +6,20 @@ reprojection, file inspection, and map preview.
 **Supported formats:** Shapefile (zipped) · GeoPackage · GeoParquet · GeoJSON ·
 FlatGeobuf · KML · CSV (WKT geometry)
 
+## Single-file version (no install at all)
+
+**`gis-converter.html`** is a self-contained page you can share with anyone: send them
+just that one file, they double-click it, and it converts GIS files entirely in their
+browser using GDAL compiled to WebAssembly — no Python, no Node, nothing to install,
+and the data never leaves their machine.
+
+- Needs an internet connection on first load (it fetches the ~10 MB conversion engine
+  and map tiles from a CDN; the engine is cached by the browser afterwards).
+- Supports Shapefile (zipped), GeoPackage, GeoJSON, FlatGeobuf, KML, and CSV (WKT),
+  with EPSG reprojection, map preview, and batch convert.
+- GeoParquet is not included in the WebAssembly GDAL build — use the server version
+  below for Parquet, or for very large files (the browser does everything in memory).
+
 ## Run
 
 ### Easiest: double-click launcher
